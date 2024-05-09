@@ -1,0 +1,159 @@
+---
+title: 'Extracting Land Cover for the state of Missouri '
+output:
+  html_document:
+    df_print: paged
+---
+
+
+First We will Import necessary libraries for our tasks. While running in others machine, some of them may ne to be installed using install.packages("the desired package name"). Once you are all set, try running the following chunk first. 
+
+```{r Importing Libraries}
+# Load the libraries
+library(sf)
+library(sp)
+library(raster)
+library(ggplot2)
+library(arcgisbinding)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(stars)
+arc.check_product()  # Check if ArcGIS binding is properly configured
+
+```
+
+We successfully imported all necessary libraries. In the next few steps we will accomplish the required tasks for project 3.
+In this project, we will try to extract the land cover types in the counties of Missouri from a regional landcover raster for the whole US. For that, we will use a remote data which is NLCDLandCover2001 and a local vector data of polygon type which stores the counties in Missouri. The remote data is stored in a remote server and the vector data is downloaded from tigerline shapefiles repository. 
+
+```{r Reading Vector and Raster Data}
+
+# Reading remote ESRI Image Service
+remote_raster_url = arc.open("https://sampleserver6.arcgisonline.com/arcgis/rest/services/NLCDLandCover2001/ImageServer")
+remote_raster_file <- arc.raster(remote_raster_url, nrow = 1000, ncol=2000) #defining number of rows and colums
+
+# Convert remote raster file to raster object
+remote_raster <- as.raster(remote_raster_file)
+
+# Reading local vector data
+local_vector <- st_read("D:/Advanced programming/missouri_counties/tl_2019_29_cousub.shp")
+
+```
+
+Cool, We have successfully read the data and it seems it is giving some additional infor like CRS while reading. 
+
+Now we will plot the remote raster using normal plot and local vector using ggplot. It will give us an idea of how these data look like.
+
+
+```{r Data plotting}
+# Plotting raster data
+plot(remote_raster, main="Landcover in USA")
+
+# Plotting vector data using ggplot
+ggplot() +
+  geom_sf(data = local_vector) +
+  theme_minimal() +
+  labs(title = "Counties in Missouri")
+
+```
+
+Excellent! We have both the raster and the vector mapped infront of our eyes, thanks to ggplot and raster functions. 
+
+Now, we will plot the histogram of raster values to understand raster values distribution. Also, we will check the basic statistics to get a bigger picture of this raster dataset.
+
+```{r plotting Raster Histogram }
+# Calculate basic statistics
+raster_stats <- cellStats(remote_raster, stat = function(x, na.rm) c(mean = mean(x, na.rm = na.rm), 
+                                                                     sd = sd(x, na.rm = na.rm),
+                                                                     min = min(x, na.rm = na.rm),
+                                                                     max = max(x, na.rm = na.rm),
+                                                                     sum = sum(x, na.rm = na.rm)))
+
+# Print the statistics
+print(raster_stats)
+
+# Plot the histogram of raster values
+hist(values(remote_raster), main="Histogram of Raster Values", xlab="Value", ylab="Frequency")
+
+```
+
+As we have plot the raster data successfully, we will move onto plotting the vector data which is the counties in MO, USA. That said, our vector data is large considering the number of counties it has. So, it might not be easy to see all the counties data in a single plot. Instead, we will use random seed to show 10 counties at a time. Then, we will plot the amount of Land Area and Water Area in those counties. Our target is to show a comparative water and land features in those counties. For reproducibility we used a seed of 123. If you want to show 10 different counties each time just comment out that piece of code.
+
+```{r Plotting Vector data}
+
+# Sample 10 random counties
+set.seed(123) # For reproducibility
+sampled_data <- local_vector[sample(nrow(local_vector), 10), ]
+
+# Plot for ALAND
+p1 <- ggplot(sampled_data, aes(x=reorder(NAME, ALAND), y=ALAND, fill='ALAND')) +
+  geom_bar(stat="identity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=65, hjust=1)) +
+  labs(x="Name of the County", y="Area of Land", fill="") +
+  scale_fill_manual(values = "skyblue") +
+  ggtitle("Land Area")
+
+# Plot for AWATER
+p2 <- ggplot(sampled_data, aes(x=reorder(NAME, AWATER), y=AWATER, fill='AWATER')) +
+  geom_bar(stat="identity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=65, hjust=1)) +
+  labs(x="Name of the County", y="Area of Water", fill="") +
+  scale_fill_manual(values = "lightgreen") +
+  ggtitle("Water Area")
+
+# Arrange the plots side by side
+grid.arrange(p1, p2, ncol=2)
+
+```
+
+Great! We got comparative plots of Land and Water areas in 10 counties. Now we would extract raster at the vector locations.For that, we will be converting a remote raster file into a compatible format, reading it into R, aligning coordinate reference systems with a local vector file, extracting values from the raster data where it intersects with vector geometries, and integrating these values into the vector data for comprehensive analysis and visualization.
+
+```{r Extracting Raster at Vector Location}
+
+# Convert to a format that can be used with `stars`
+raster_path <- tempfile(fileext = ".tif")
+arc.write(raster_path, remote_raster_file)
+
+#reading raster stars
+remote_raster_stars <- read_stars(raster_path)
+
+# Make sure the coordinate reference systems match
+local_vector <- st_transform(local_vector, st_crs(remote_raster_stars))
+
+# Use st_extract to extract values from the raster where it overlaps with vector geometries
+extracted_values <- st_extract(remote_raster_stars, local_vector)
+
+# Extracted values, which will be stored in a list-column in local_vector
+local_vector$raster_values <- extracted_values[[1]] 
+
+# Explore the results
+print(local_vector)
+
+
+```
+
+Now the time to save extracted values in a local gdb.To do that, we have specified the path to a File Geodatabase and writes an sf object, represented by local_vector, to this specified Geodatabase location.
+
+```{r Saving the extracted values polygon in the local gdb}
+
+# Specify the path to the File Geodatabase
+gdb_path <- "D:/Advanced programming/missouri_counties/project3.gdb/extracted_values5"
+
+# Write the sf object to the File Geodatabase
+arc.write(gdb_path, local_vector)
+
+```
+
+Now, time to plot the extracted values of raster for the vector locations which is counties in MO, USA.
+```{r plotting Extracted Values of raster for the vecor locations}
+ggplot(local_vector) +
+    geom_sf(aes(fill = raster_values), color = NA) +  # Assuming raster_values are directly plottable
+    scale_fill_viridis_c() +
+    labs(fill = "Raster Value", title = "Spatial Plot of Raster Values in Missouri")
+
+
+```
+
+Hooray! We have saved it and plot it. You can also use softwares like ArcGIS pro to open the feature class created above and do more analysis.
